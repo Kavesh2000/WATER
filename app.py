@@ -29,8 +29,6 @@ def login_page():
 
 @app.route('/dashboard')
 def dashboard_page():
-    # Prevent unauthenticated access to a dashboard route.
-    # The SPA is served from index.html; require a session or redirect to home.
     if 'user' not in session:
         return redirect('/')
     return app.send_static_file('index.html')
@@ -41,22 +39,18 @@ def api_login():
     data = request.get_json() or {}
     username = data.get('username')
     password = data.get('password')
-    # optional role the client expects to log in as (user or admin)
     expected_role = data.get('role')
     user = db.authenticate_user(username, password)
     if not user:
         return jsonify({'error': 'Invalid credentials'}), 401
-    # if client requested a specific role, verify the authenticated user has the role
     if expected_role and user.get('role') != expected_role:
         return jsonify({'error': f'Invalid role — user is {user.get("role")}, not {expected_role}'}), 403
-    # store minimal session
     session['user'] = {'id': user['id'], 'username': user['username'], 'role': user['role']}
     return jsonify({'ok': True, 'user': session['user']})
 
 
 @app.route('/api/whoami')
 def api_whoami():
-    """Return current logged-in user or 401."""
     u = session.get('user')
     if not u:
         return jsonify({'error': 'unauthenticated'}), 401
@@ -77,7 +71,6 @@ def api_products():
 
 @app.route('/api/products', methods=['POST'])
 def api_create_product():
-    # only admins may create products
     u = session.get('user')
     if not u or u.get('role') != 'admin':
         return jsonify({'error': 'forbidden'}), 403
@@ -98,17 +91,15 @@ def api_update_product(product_id):
     data = request.get_json() or {}
     name = data.get('name')
     unit_price = data.get('unit_price')
-    
-    # Allow updating just the price (for admin price management)
+
     if unit_price is not None and name is None:
-        # Get the existing product to preserve its name
         cur = db.connect().cursor()
         cur.execute("SELECT name FROM products WHERE id = ?", (product_id,))
         row = cur.fetchone()
         if not row:
             return jsonify({'error': 'product not found'}), 404
         name = row[0]
-    
+
     if not name or unit_price is None:
         return jsonify({'error': 'name and unit_price required'}), 400
     p = db.update_product(product_id, name, float(unit_price))
@@ -139,44 +130,47 @@ def api_product_price_history(product_id):
 
 @app.route('/api/orders', methods=['GET', 'POST'])
 def api_orders():
-    # require authentication for orders
     u = session.get('user')
     if not u:
         return jsonify({'error': 'unauthenticated'}), 401
     if request.method == 'GET':
         date = request.args.get('date')
-        # admin sees all orders; regular users see only their own
         if u.get('role') == 'admin':
             return jsonify(db.list_orders(date_iso=date))
         else:
             return jsonify(db.list_orders(date_iso=date, user_id=u.get('id')))
-    # POST: create order; attribute to session user
     data = request.get_json() or {}
     try:
         product_id = int(data.get('product_id'))
     except Exception:
         return jsonify({'error': 'invalid product_id'}), 400
-    # allow decimal quantities (floats)
     try:
         quantity = float(data.get('quantity', 1))
     except Exception:
         return jsonify({'error': 'invalid quantity'}), 400
     payment_method = data.get('payment_method', 'Cash')
     order_date = data.get('order_date')
-    # Get bottle price from request
     try:
         bottle_price = float(data.get('bottle_price', 0))
     except Exception:
         bottle_price = 0
     try:
         use_bottle = bool(data.get('use_bottle'))
-        # optional bottles_used (int) when client explicitly provides number of bottles consumed
         try:
             bottles_used = data.get('bottles_used')
             bottles_used = int(bottles_used) if bottles_used is not None else None
         except Exception:
             bottles_used = None
-        order = db.record_order(product_id=product_id, quantity=quantity, payment_method=payment_method, order_date=order_date, created_by=u.get('id'), use_bottle=use_bottle, bottles_used=bottles_used, bottle_price=bottle_price)
+        order = db.record_order(
+            product_id=product_id,
+            quantity=quantity,
+            payment_method=payment_method,
+            order_date=order_date,
+            created_by=u.get('id'),
+            use_bottle=use_bottle,
+            bottles_used=bottles_used,
+            bottle_price=bottle_price
+        )
     except ValueError as ve:
         return jsonify({'error': str(ve)}), 400
     except Exception as e:
@@ -184,13 +178,11 @@ def api_orders():
     return jsonify(order)
 
 
-
 @app.route('/api/stock', methods=['GET'])
 def api_list_stock():
     u = session.get('user')
     if not u:
         return jsonify({'error': 'unauthenticated'}), 401
-    # Allow any authenticated user to read inventory; modifications remain admin-only
     return jsonify(db.list_inventory())
 
 
@@ -234,13 +226,11 @@ def api_delete_stock(product_id):
     return jsonify({'ok': True})
 
 
-# Sources (central tanks) endpoints (admin-only)
 @app.route('/api/sources', methods=['GET'])
 def api_list_sources():
     u = session.get('user')
     if not u:
         return jsonify({'error': 'unauthenticated'}), 401
-    # Allow any authenticated user to read sources (tanks); only admins may modify
     return jsonify(db.list_sources())
 
 
@@ -292,13 +282,11 @@ def api_delete_source(source_id):
     return jsonify({'ok': True})
 
 
-# Product->Source mapping endpoints
 @app.route('/api/product_sources', methods=['GET'])
 def api_list_product_sources():
     u = session.get('user')
     if not u:
         return jsonify({'error': 'unauthenticated'}), 401
-    # Product->source mapping can be read by authenticated users; modifications are admin-only
     return jsonify(db.list_product_sources())
 
 
@@ -323,8 +311,6 @@ def api_delete_product_source(product_id):
     u = session.get('user')
     if not u or u.get('role') != 'admin':
         return jsonify({'error': 'forbidden'}), 403
-    # remove mapping by setting source to NULL (we'll delete the row)
-    # simple implementation: set source_id to NULL by deleting the row
     conn = db.connect()
     cur = conn.cursor()
     cur.execute('DELETE FROM product_sources WHERE product_id = ?', (product_id,))
@@ -356,7 +342,6 @@ def api_list_movements():
 
 @app.route('/api/upload_image', methods=['POST'])
 def api_upload_image():
-    # simple upload endpoint to save gallery images into web/assets/images
     if 'file' not in request.files:
         return jsonify({'error': 'no file provided'}), 400
     f = request.files['file']
@@ -372,7 +357,6 @@ def api_upload_image():
 
 @app.route('/api/daily_summary')
 def api_daily_summary():
-    # only admin can see the overall daily summary
     u = session.get('user')
     if not u or u.get('role') != 'admin':
         return jsonify({'error': 'forbidden'}), 403
@@ -382,7 +366,6 @@ def api_daily_summary():
 
 @app.route('/api/images')
 def api_images():
-    """Return a list of image URLs found in web/assets/images/ (local uploads)."""
     images_dir = Path(app.static_folder) / 'assets' / 'images'
     out = []
     if images_dir.exists():
@@ -393,8 +376,6 @@ def api_images():
 
 
 if __name__ == '__main__':
-    # ensure DB exists and default product/users are present
     db.init_db()
-    # Bind to localhost only so the console shows the local address (127.0.0.1) only.
-    # If you want LAN access, change host back to '0.0.0.0'.
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
